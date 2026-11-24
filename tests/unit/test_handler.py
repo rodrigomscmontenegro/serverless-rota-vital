@@ -1,72 +1,98 @@
+
 import json
+from unittest.mock import patch
 
 import pytest
 
 from hello_world import app
 
 
-@pytest.fixture()
-def apigw_event():
-    """ Generates API GW Event"""
-
-    return {
-        "body": '{ "test": "body"}',
-        "resource": "/{proxy+}",
-        "requestContext": {
-            "resourceId": "123456",
-            "apiId": "1234567890",
-            "resourcePath": "/{proxy+}",
-            "httpMethod": "POST",
-            "requestId": "c6af9ac6-7b61-11e6-9a41-93e8deadbeef",
-            "accountId": "123456789012",
-            "identity": {
-                "apiKey": "",
-                "userArn": "",
-                "cognitoAuthenticationType": "",
-                "caller": "",
-                "userAgent": "Custom User Agent String",
-                "user": "",
-                "cognitoIdentityPoolId": "",
-                "cognitoIdentityId": "",
-                "cognitoAuthenticationProvider": "",
-                "sourceIp": "127.0.0.1",
-                "accountId": "",
-            },
-            "stage": "prod",
-        },
-        "queryStringParameters": {"foo": "bar"},
-        "headers": {
-            "Via": "1.1 08f323deadbeefa7af34d5feb414ce27.cloudfront.net (CloudFront)",
-            "Accept-Language": "en-US,en;q=0.8",
-            "CloudFront-Is-Desktop-Viewer": "true",
-            "CloudFront-Is-SmartTV-Viewer": "false",
-            "CloudFront-Is-Mobile-Viewer": "false",
-            "X-Forwarded-For": "127.0.0.1, 127.0.0.2",
-            "CloudFront-Viewer-Country": "US",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Upgrade-Insecure-Requests": "1",
-            "X-Forwarded-Port": "443",
-            "Host": "1234567890.execute-api.us-east-1.amazonaws.com",
-            "X-Forwarded-Proto": "https",
-            "X-Amz-Cf-Id": "aaaaaaaaaae3VYQb9jd-nvCd-de396Uhbp027Y2JvkCPNLmGJHqlaA==",
-            "CloudFront-Is-Tablet-Viewer": "false",
-            "Cache-Control": "max-age=0",
-            "User-Agent": "Custom User Agent String",
-            "CloudFront-Forwarded-Proto": "https",
-            "Accept-Encoding": "gzip, deflate, sdch",
-        },
-        "pathParameters": {"proxy": "/examplepath"},
-        "httpMethod": "POST",
-        "stageVariables": {"baz": "qux"},
-        "path": "/examplepath",
-    }
+@pytest.fixture(autouse=True)
+def reset_counter(monkeypatch):
+    monkeypatch.setattr(app, "contador", 0)
 
 
-def test_lambda_handler(apigw_event):
+def create_event(pedido):
+    return {"body": json.dumps(pedido)}
 
-    ret = app.lambda_handler(apigw_event, "")
-    data = json.loads(ret["body"])
 
-    assert ret["statusCode"] == 200
-    assert "message" in ret["body"]
-    assert data["message"] == "hello world"
+def test_generate_transport_guide():
+    event = create_event({
+        "requisicaoId": "R-001",
+        "hospital": "H-Recife",
+        "bolsas": ["O-NEG-0142"],
+    })
+
+    response = app.lambda_handler(event, None)
+    data = json.loads(response["body"])
+
+    assert response["statusCode"] == 201
+    assert data["guia"] == "G-R-001"
+    assert data["hospital"] == "H-Recife"
+    assert data["bolsas"] == ["O-NEG-0142"]
+    assert data["invocacaoNesteAmbiente"] == 1
+
+
+def test_missing_request_id():
+    event = create_event({
+        "hospital": "H-Recife",
+    })
+
+    response = app.lambda_handler(event, None)
+    data = json.loads(response["body"])
+
+    assert response["statusCode"] == 400
+    assert data["erro"] == "requisicaoId obrigatório"
+
+
+def test_default_empty_bags():
+    event = create_event({
+        "requisicaoId": "R-002",
+        "hospital": "H-Caruaru",
+    })
+
+    response = app.lambda_handler(event, None)
+    data = json.loads(response["body"])
+
+    assert response["statusCode"] == 201
+    assert data["bolsas"] == []
+
+
+def test_missing_hospital():
+    event = create_event({
+        "requisicaoId": "R-003",
+    })
+
+    response = app.lambda_handler(event, None)
+    data = json.loads(response["body"])
+
+    assert response["statusCode"] == 201
+    assert data["hospital"] is None
+
+
+def test_invocation_counter():
+    event = create_event({
+        "requisicaoId": "R-004",
+    })
+
+    first = app.lambda_handler(event, None)
+    second = app.lambda_handler(event, None)
+    third = app.lambda_handler(event, None)
+
+    assert json.loads(first["body"])["invocacaoNesteAmbiente"] == 1
+    assert json.loads(second["body"])["invocacaoNesteAmbiente"] == 2
+    assert json.loads(third["body"])["invocacaoNesteAmbiente"] == 3
+
+
+def test_delayed_request():
+    event = create_event({
+        "requisicaoId": "R-005",
+        "demorar": True,
+    })
+
+    with patch("hello_world.app.time.sleep") as mock_sleep:
+        response = app.lambda_handler(event, None)
+
+        mock_sleep.assert_called_once_with(5)
+
+    assert response["statusCode"] == 201
